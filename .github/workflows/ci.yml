@@ -1,0 +1,130 @@
+name: DevSecOps CI Pipeline
+
+on:
+  push:
+    branches:
+      - sesi30-devsecops
+  pull_request:
+
+jobs:
+
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r dev-requirements.txt
+
+      - name: Run Pytest
+        run: |
+          PYTHONPATH=. pytest
+
+  sast:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Run Bandit
+        run: bandit -r app
+
+  sca:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r dev-requirements.txt
+
+      - name: Run pip-audit
+        run: pip-audit
+
+  secret_scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+
+  build_and_push:
+    runs-on: ubuntu-latest
+
+    needs:
+      - test
+      - sast
+      - sca
+      - secret_scan
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set Commit SHA
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build Docker Image
+        run: |
+          docker build -t fernandopsrb/notes-app:latest .
+          docker tag fernandopsrb/notes-app:latest fernandopsrb/notes-app:${{ steps.vars.outputs.sha_short }}
+
+      - name: Push Docker Image
+        run: |
+          docker push fernandopsrb/notes-app:latest
+          docker push fernandopsrb/notes-app:${{ steps.vars.outputs.sha_short }}
+
+  image_scan:
+    runs-on: ubuntu-latest
+
+    needs:
+      - build_and_push
+
+    steps:
+      - name: Run Trivy Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'fernandopsrb/notes-app:latest'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
